@@ -29,3 +29,13 @@ export OS_CLOUD=mycloud
 ./tenkspoons
 # Ctrl-c to exit, view metrics at http://localhost:8000/
 ```
+
+Running locally as a container
+------------------------------
+
+Container builds are up to date with the main branch
+
+```
+podman run --net=host -ti --rm --env OS_CLOUD=tenkspoons --volume ~/.config/openstack:/etc/openstack  steveb/tenkspoons:main-latest
+# Ctrl-c to exit, view metrics at http://localhost:8000/
+```
