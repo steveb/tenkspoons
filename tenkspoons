@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+
+from distutils.command.clean import clean
+import os
+import random
+import string
+import time
+
+import openstack
+import prometheus_client
+
+prometheus_client.REGISTRY.unregister(prometheus_client.GC_COLLECTOR)
+prometheus_client.REGISTRY.unregister(prometheus_client.PLATFORM_COLLECTOR)
+prometheus_client.REGISTRY.unregister(prometheus_client.PROCESS_COLLECTOR)
+
+REQUEST_TIME = prometheus_client.Histogram('node', 'Node activity', ['action'])
+
+def driver():
+    return 'fake-hardware'
+    # return os.environ.get('TENKSPOONS_HARDWARE', 'fake-hardware')
+
+def node_name():
+    name = os.environ.get('TENKSPOONS_NAME', 'tenkspoons')
+    suffix_length = int(os.environ.get('TENKSPOONS_SUFFIX_LENGTH', 5))
+    if not suffix_length:
+        return name
+    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=suffix_length))
+    time.sleep(random.random())
+    return '%s-%s' % (name, suffix)
+
+@REQUEST_TIME.labels(action='get').time()
+def find_node(bm, name):
+    return bm.find_node(name, ignore_missing=True)
+
+@REQUEST_TIME.labels(action='create').time()
+def create_node(bm, name):
+    return bm.create_node(
+        driver='fake-hardware',
+        name=name,
+        resource_class='baremetal',
+    )
+
+@REQUEST_TIME.labels(action='delete').time()
+def delete_node(bm, name):
+    return bm.delete_node(name)
+
+@REQUEST_TIME.labels(action='manage').time()
+def manage_node(bm, node):
+    return node.set_provision_state(bm, 'manage', wait=True)
+
+@REQUEST_TIME.labels(action='provide').time()
+def provide_node(bm, node):
+    return node.set_provision_state(bm, 'provide', wait=True)
+
+@REQUEST_TIME.labels(action='deploy').time()
+def deploy_node(bm, node):
+    node = node.set_provision_state(bm, 'deploy')
+    return node.wait_for_provision_state(bm, 'active', abort_on_failed_state=True)
+
+@REQUEST_TIME.labels(action='undeploy').time()
+def undeploy_node(bm, node):
+    node = node.set_provision_state(bm, 'undeploy')
+    return node.wait_for_provision_state(bm, 'available', abort_on_failed_state=True)
+
+def toggle_power(bm, node):
+    if node.power_state == 'power on':
+        with REQUEST_TIME.labels(action='power off').time():
+            node.set_power_state(bm, 'power off', wait=True)
+    else:
+        with REQUEST_TIME.labels(action='power on').time():
+            node.set_power_state(bm, 'power on', wait=True)
+
+def exercise(bm):
+
+    name = node_name()
+    node = find_node(bm, name)
+    if node:
+        cleanup_delete = False
+    else:
+        cleanup_delete = True
+        node = create_node(bm, name)
+
+    if node.provision_state == 'enroll':
+        node = manage_node(bm, node)
+
+    if node.provision_state == 'manageable':
+        node = provide_node(bm, node)
+
+    if node.provision_state == 'available':
+        node = deploy_node(bm, node)
+
+    toggle_power(bm, node)
+    toggle_power(bm, node)
+
+    if node.provision_state == 'active':
+        node = undeploy_node(bm, node)
+
+    node = manage_node(bm, node)
+    if cleanup_delete:
+        node = delete_node(bm, node)
+
+
+
+def main():
+
+    prometheus_client.start_http_server(8000)
+
+    # Initialize and turn on debug logging
+    openstack.enable_logging(debug=True)
+
+    # Initialize connection
+    bm = openstack.connect().baremetal
+
+    while True:
+        exercise(bm)
+
+if __name__ == '__main__':
+    main()
