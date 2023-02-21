@@ -30,12 +30,18 @@ export OS_CLOUD=mycloud
 # Ctrl-c to exit, view metrics at http://localhost:8000/
 ```
 
+Build a container
+-----------------
+```
+buildah bud -t quay.io/steveb/tenkspoons:main-latest .
+```
+
 Running locally as a container
 ------------------------------
 
 Container builds are up to date with the main branch
 
 ```
-podman run --net=host -ti --rm --env OS_CLOUD=tenkspoons --volume ~/.config/openstack:/etc/openstack  steveb/tenkspoons:main-latest
+podman run --net=host -ti --rm --env OS_CLOUD=tenkspoons --volume ~/.config/openstack:/etc/openstack  quay.io/steveb/tenkspoons:main-latest
 # Ctrl-c to exit, view metrics at http://localhost:8000/
 ```
