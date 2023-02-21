@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+
 from distutils.command.clean import clean
 import os
 import random
 import string
 import time
+import traceback
 
 import openstack
 import prometheus_client
@@ -13,7 +15,9 @@ prometheus_client.REGISTRY.unregister(prometheus_client.GC_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.PLATFORM_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.PROCESS_COLLECTOR)
 
-REQUEST_TIME = prometheus_client.Histogram('node', 'Node activity', ['action'])
+REQUEST_TIME = prometheus_client.Summary('ironic_node', 'Node activity', ['action'])
+REQUEST_EXCEPTION = prometheus_client.Counter('ironic_operation_failures', 'Node operation failures', ['action'])
+STATE_FAILED = prometheus_client.Counter('ironic_state_failures', 'Node provision state failures', ['action'])
 
 def driver():
     return 'fake-hardware'
@@ -25,79 +29,95 @@ def node_name():
     if not suffix_length:
         return name
     suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=suffix_length))
-    time.sleep(random.random())
     return '%s-%s' % (name, suffix)
 
+@REQUEST_EXCEPTION.labels(action='get').count_exceptions()
 @REQUEST_TIME.labels(action='get').time()
 def find_node(bm, name):
     return bm.find_node(name, ignore_missing=True)
 
+@REQUEST_EXCEPTION.labels(action='get').count_exceptions()
 @REQUEST_TIME.labels(action='create').time()
 def create_node(bm, name):
-    return bm.create_node(
+    return count_state_failed('create', bm.create_node(
         driver='fake-hardware',
+        deploy_interface='fake',
         name=name,
         resource_class='baremetal',
-    )
+    ))
 
+@REQUEST_EXCEPTION.labels(action='delete').count_exceptions()
 @REQUEST_TIME.labels(action='delete').time()
 def delete_node(bm, name):
-    return bm.delete_node(name)
+    return count_state_failed('delete', bm.delete_node(name))
 
+@REQUEST_EXCEPTION.labels(action='manage').count_exceptions()
 @REQUEST_TIME.labels(action='manage').time()
 def manage_node(bm, node):
-    return node.set_provision_state(bm, 'manage', wait=True)
+    return count_state_failed('manage', node.set_provision_state(bm, 'manage', wait=True))
 
+@REQUEST_EXCEPTION.labels(action='provide').count_exceptions()
 @REQUEST_TIME.labels(action='provide').time()
 def provide_node(bm, node):
-    return node.set_provision_state(bm, 'provide', wait=True)
+    return count_state_failed('provide', node.set_provision_state(bm, 'provide', wait=True))
 
+@REQUEST_EXCEPTION.labels(action='deploy').count_exceptions()
 @REQUEST_TIME.labels(action='deploy').time()
 def deploy_node(bm, node):
-    node = node.set_provision_state(bm, 'deploy')
-    return node.wait_for_provision_state(bm, 'active', abort_on_failed_state=True)
+    node = count_state_failed('deploy', node.set_provision_state(bm, 'deploy'))
+    return count_state_failed('deploy', node.wait_for_provision_state(bm, 'active', abort_on_failed_state=True))
 
+@REQUEST_EXCEPTION.labels(action='undeploy').count_exceptions()
 @REQUEST_TIME.labels(action='undeploy').time()
 def undeploy_node(bm, node):
-    node = node.set_provision_state(bm, 'undeploy')
-    return node.wait_for_provision_state(bm, 'available', abort_on_failed_state=True)
+    node = count_state_failed('undeploy', node.set_provision_state(bm, 'undeploy'))
+    return count_state_failed('undeploy', node.wait_for_provision_state(bm, 'available', abort_on_failed_state=True))
 
+@REQUEST_EXCEPTION.labels(action='power').count_exceptions()
+@REQUEST_TIME.labels(action='power').time()
 def toggle_power(bm, node):
     if node.power_state == 'power on':
-        with REQUEST_TIME.labels(action='power off').time():
-            node.set_power_state(bm, 'power off', wait=True)
+        with REQUEST_EXCEPTION.labels(action='power off').count_exceptions():
+            with REQUEST_TIME.labels(action='power off').time():
+                node.set_power_state(bm, 'power off', wait=True)
+                count_state_failed('power off', node)
     else:
-        with REQUEST_TIME.labels(action='power on').time():
-            node.set_power_state(bm, 'power on', wait=True)
+        with REQUEST_EXCEPTION.labels(action='power on').count_exceptions():
+            with REQUEST_TIME.labels(action='power on').time():
+                node.set_power_state(bm, 'power on', wait=True)
+                count_state_failed('power on', node)
+
+def count_state_failed(action, node):
+    if 'failed' in node.provision_state:
+        STATE_FAILED.labels(action=action).inc()
+    return node
 
 def exercise(bm):
 
-    name = node_name()
-    node = find_node(bm, name)
-    if node:
-        cleanup_delete = False
-    else:
-        cleanup_delete = True
-        node = create_node(bm, name)
+    try:
+        name = node_name()
+        node = find_node(bm, name)
+        if node:
+            cleanup_delete = False
+        else:
+            cleanup_delete = True
+            node = create_node(bm, name)
 
-    if node.provision_state == 'enroll':
         node = manage_node(bm, node)
 
-    if node.provision_state == 'manageable':
         node = provide_node(bm, node)
 
-    if node.provision_state == 'available':
         node = deploy_node(bm, node)
 
-    toggle_power(bm, node)
-    toggle_power(bm, node)
+        toggle_power(bm, node)
+        toggle_power(bm, node)
 
-    if node.provision_state == 'active':
         node = undeploy_node(bm, node)
 
-    node = manage_node(bm, node)
-    if cleanup_delete:
-        node = delete_node(bm, node)
+        node = manage_node(bm, node)
+    finally:
+        if cleanup_delete:
+            node = delete_node(bm, node)
 
 
 
@@ -112,7 +132,10 @@ def main():
     bm = openstack.connect().baremetal
 
     while True:
-        exercise(bm)
+        try:
+            exercise(bm)
+        except Exception as e:
+            traceback.print_exc()
 
 if __name__ == '__main__':
     main()
