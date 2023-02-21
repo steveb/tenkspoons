@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: tenkspoons
+    app.kubernetes.io/component: tenkspoons
+    app.kubernetes.io/instance: tenkspoons
+    app.kubernetes.io/part-of: tenkspoons
+    app.openshift.io/runtime: redhat
+  name: tenkspoons
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tenkspoons
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: tenkspoons
+        deploymentconfig: tenkspoons
+    spec:
+      containers:
+      - image: quay.io/steveb/tenkspoons:main-latest
+        imagePullPolicy: Always
+        name: tenkspoons
+        resources: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: tenkspoons
+  name: tenkspoons
+spec:
+  ports:
+  - port: 8000
+    protocol: TCP
+    targetPort: 8000
+    name: web
+  selector:
+    app: tenkspoons
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true 
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    k8s-app: tenkspoons-monitor
+  name: tenkspoons-monitor
+spec:
+  endpoints:
+  - interval: 30s
+    port: web
+    scheme: http
+  selector:
+    matchLabels:
+      app: tenkspoons
