@@ -1,0 +1,5 @@
+clouds:
+  podified_ironic:
+    auth_type: "none"
+    baremetal_endpoint_override: http://ironic-public-openstack.apps.h02.stevebaker.org
+    baremetal_introspection_endpoint_override: http://ironic-inspector-public-openstack.apps.h02.stevebaker.org
